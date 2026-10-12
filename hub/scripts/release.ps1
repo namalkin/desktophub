@@ -46,9 +46,15 @@ $files | ForEach-Object { Write-Host ("  {0}  ({1} KB)" -f $_, [math]::Round((Ge
 if ($DryRun) { return }
 
 # --- Токен из git credential ---
-$query = "protocol=https`nhost=github.com`n`n"
-$cred = $query | git credential fill 2>$null
-$token = ($cred | Where-Object { $_ -like 'password=*' } | Select-Object -First 1) -replace '^password=', ''
+# Не через конвейер PowerShell: PowerShell 5 искажает ввод внешней программы, и git
+# отвечает «credential missing protocol field». Запрос — файлом с LF, через cmd.
+$queryFile = [IO.Path]::GetTempFileName()
+[IO.File]::WriteAllBytes($queryFile, [Text.Encoding]::ASCII.GetBytes("protocol=https`nhost=github.com`n`n"))
+$env:GIT_TERMINAL_PROMPT = '0'
+$cred = cmd /c "git credential fill < `"$queryFile`""
+Remove-Item $queryFile -ErrorAction SilentlyContinue
+$line = $cred | Where-Object { $_ -like 'password=*' } | Select-Object -First 1
+$token = if ($line) { ([string]$line).Substring(9).Trim() } else { '' }
 if (-not $token) { throw 'git не хранит вход в github.com. Сделайте git push — Credential Manager попросит войти.' }
 
 $headers = @{
@@ -70,13 +76,34 @@ $body = @{
     name     = $Tag
     body     = 'Центр виджетов (WidgetHub.exe) и все виджеты серии. Достаточно скачать WidgetHub.exe — остальное он скачает сам.'
 } | ConvertTo-Json
-$release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$Repo/releases" -Headers $headers `
-    -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json; charset=utf-8'
+# Релиз с этим тегом уже есть (прошлый запуск оборвался) — дозаливаем в него.
+$release = $null
+try {
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" -Headers $headers
+    Write-Host "Релиз $Tag уже есть — обновляю файлы в нём." -ForegroundColor Cyan
+} catch {
+    $release = Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$Repo/releases" -Headers $headers `
+        -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json; charset=utf-8'
+}
 
 foreach ($f in $files) {
     $name = Split-Path $f -Leaf
+    # Одноимённый файл в релизе заменяем: GitHub не даёт залить второй с тем же именем.
+    foreach ($a in @($release.assets)) {
+        if ($a -and $a.name -eq $name) {
+            Invoke-RestMethod -Method Delete -Uri "https://api.github.com/repos/$Repo/releases/assets/$($a.id)" -Headers $headers | Out-Null
+        }
+    }
     Write-Host "  загружаю $name..."
+    # Читаем с общим доступом: .exe может быть запущен, а -InFile открывает файл монопольно.
+    $stream = [IO.File]::Open($f, 'Open', 'Read', 'ReadWrite')
+    try {
+        $data = New-Object byte[] $stream.Length
+        [void]$stream.Read($data, 0, $data.Length)
+    } finally {
+        $stream.Dispose()
+    }
     $uri = "https://uploads.github.com/repos/$Repo/releases/$($release.id)/assets?name=$name"
-    Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -InFile $f -ContentType 'application/octet-stream' | Out-Null
+    Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $data -ContentType 'application/octet-stream' | Out-Null
 }
 Write-Host "Готово: $($release.html_url)" -ForegroundColor Green
