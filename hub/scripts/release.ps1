@@ -2,8 +2,8 @@
 # Центр качает виджеты по адресу .../releases/latest/download/<Имя>.exe, поэтому имена
 # файлов в релизе должны совпадать с полем "exe" в hub\catalog.json.
 #
-#   .\hub\scripts\release.ps1 -Tag v1.0.0 -DryRun   # только показать, что уйдёт
-#   .\hub\scripts\release.ps1 -Tag v1.0.0
+#   .\hub\scripts\release.ps1 -DryRun   # только показать, что уйдёт
+#   .\hub\scripts\release.ps1           # тег — "v" + VERSION из корня репозитория
 #
 # gh не нужен: релиз создаётся через REST API GitHub. Токен берётся у git — тот самый
 # вход, который Git Credential Manager сохранил при первом `git push`. Перед выпуском
@@ -13,7 +13,7 @@
 
 param(
     [string]$Repo = '',             # по умолчанию — поле "repo" из catalog.json
-    [Parameter(Mandatory = $true)][string]$Tag,
+    [string]$Tag = '',              # по умолчанию — "v" + содержимое файла VERSION
     [string]$Account = 'namalkin',  # от чьего имени разрешено выпускать релиз
     [switch]$DryRun
 )
@@ -25,6 +25,17 @@ $hub = Split-Path -Parent $PSScriptRoot
 $root = Split-Path -Parent $hub
 $catalog = Get-Content (Join-Path $hub 'catalog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not $Repo) { $Repo = $catalog.repo }
+
+# Тег обязан совпадать с версией, вшитой в центр: центр сравнивает их и иначе всегда
+# считал бы себя устаревшим (или не видел бы своё обновление).
+$versionFile = Join-Path $root 'VERSION'
+$version = (Get-Content $versionFile -Raw).Trim()
+if (-not $Tag) { $Tag = "v$version" }
+if ($Tag -ne "v$version") { throw "Тег $Tag не совпадает с VERSION ($version). Поменяйте VERSION и пересоберите центр." }
+$hubBuilt = Join-Path $hub 'dist\WidgetHub.exe'
+if ((Test-Path $hubBuilt) -and (Get-Item $hubBuilt).LastWriteTime -lt (Get-Item $versionFile).LastWriteTime) {
+    throw 'VERSION новее, чем hub\dist\WidgetHub.exe — пересоберите центр, чтобы в нём была новая версия.'
+}
 
 $files = @()
 $missing = @()

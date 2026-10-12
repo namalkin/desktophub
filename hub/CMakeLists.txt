@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(WidgetHub VERSION 1.0.0 LANGUAGES CXX)
+
+# Версия — одна на весь репозиторий, в файле VERSION. Центр сравнивает её с тегом
+# последнего релиза, а release.ps1 ставит тег из того же файла.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" HUB_VERSION)
+string(STRIP "${HUB_VERSION}" HUB_VERSION)
+
+project(WidgetHub VERSION ${HUB_VERSION} LANGUAGES CXX)
 
 enable_language(RC)
 
@@ -17,6 +23,7 @@ add_executable(WidgetHub WIN32
     src/catalog.cpp
     src/control.cpp
     src/download.cpp
+    src/update.cpp
     src/markdown.cpp
     src/store.cpp
     src/sys.cpp
@@ -35,6 +42,7 @@ target_compile_definitions(WidgetHub PRIVATE
     NOMINMAX              # min/max для gdiplus подставляет ui.h через using std::min/max
     _WIN32_WINNT=0x0A00   # Windows 10
     __USE_MINGW_ANSI_STDIO=1
+    HUB_VERSION="${HUB_VERSION}"
 )
 
 # Библиотеки — только те, что есть в самой Windows.
@@ -49,6 +57,7 @@ target_link_libraries(WidgetHub PRIVATE
     comdlg32  # «Указать файл…»
     advapi32  # реестр: автозапуск
     wininet   # скачивание с GitHub
+    bcrypt    # SHA-256: совпадает ли виджет с файлом релиза
     dwmapi    # тёмный заголовок окна
 )
 

@@ -20,6 +20,12 @@ constexpr UINT kMsgDone = WM_APP + 21;      // wParam — индекс, lParam �
 std::wstring ReleaseUrl(const std::wstring& repo, const std::wstring& exe);
 
 bool Start(HWND notify, int index, const catalog::Entry& entry, const std::wstring& url, const std::wstring& dest);
+
+// Обновление самого центра. Запущенный .exe нельзя перезаписать, но можно переименовать:
+// текущий файл уходит в WidgetHub.exe.old, новый встаёт на его место. Запустить новый и
+// выйти — дело окна (kMsgDone с wParam == kSelfIndex). .old удаляет следующий запуск.
+constexpr int kSelfIndex = 1000;
+bool StartSelf(HWND notify, const std::wstring& url);
 bool Busy(int index);
 int Percent(int index);  // -1 — размер неизвестен
 

@@ -16,6 +16,7 @@
 #include "store.h"
 #include "sys.h"
 #include "ui.h"
+#include "update.h"
 #include "util.h"
 
 using namespace Gdiplus;
@@ -24,6 +25,9 @@ namespace {
 
 constexpr UINT kTimerPoll = 1;
 constexpr UINT kTimerPollSoon = 2;  // разовый опрос вскоре после команды виджету
+constexpr UINT kTimerUpdate = 3;    // проверка релиза: вскоре после старта, потом раз в 6 часов
+constexpr UINT kUpdateFirstMs = 4000;
+constexpr UINT kUpdateEveryMs = 6 * 60 * 60 * 1000;
 constexpr UINT kPollMs = 1000;
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr int kIconResourceId = 1;
@@ -65,6 +69,9 @@ enum ElemId {
     kOpenReleases,
     kOpenInstall,
     kScrollThumb,
+    kHubUpdate,     // плашка «Доступен центр vX» в боковой панели
+    kWidgetUpdate,  // «Обновить» на странице виджета
+    kCheckUpdates,  // «Проверить» в настройках
 };
 
 struct Elem {
@@ -84,6 +91,7 @@ constexpr UINT kCmdUpdate = 910;
 constexpr UINT kCmdReveal = 911;
 constexpr UINT kCmdPick = 912;
 constexpr UINT kCmdReleases = 913;
+constexpr UINT kCmdUpdateHub = 902;
 
 struct Fonts {
     std::unique_ptr<FontFamily> family;
@@ -139,6 +147,12 @@ private:
     void ShowHub();
     void HideHub();
     void Exit();
+
+    // Обновления
+    void OnUpdateChecked(bool ok);
+    void RecomputeUpdates();
+    void UpdateHub();
+    bool HubUpdateAvailable() const;
     void SavePlacement();
 
     // Отрисовка
@@ -183,6 +197,12 @@ private:
     std::vector<bool> autostart_;
     std::vector<HWND> trayHidden_;  // каким окнам виджетов уже сказали спрятать значок
     bool hubAutostart_ = false;
+
+    update::Release latest_;  // последний релиз, если проверка удалась
+    bool haveLatest_ = false;
+    std::wstring updateStatus_;          // итог последней проверки для настроек
+    std::vector<bool> widgetUpdate_;     // у виджета в релизе другая сборка
+    bool restarting_ = false;            // центр уходит ради новой версии
 
     int selected_ = 0;  // -1 — настройки центра
     md::Document doc_;
@@ -248,6 +268,8 @@ void Hub::Poll() {
         changed = true;
     }
     if (changed && IsWindowVisible(hwnd_)) InvalidateRect(hwnd_, nullptr, FALSE);
+    // Файл виджета могли заменить мимо центра; хеш пересчитается, только если файл менялся.
+    if (haveLatest_) RecomputeUpdates();
 }
 
 std::wstring Hub::StatusText(int i) const {
@@ -406,6 +428,9 @@ void Hub::ShowTrayMenu(POINT pt) {
                     entries[k].name.c_str());
     }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (HubUpdateAvailable()) {
+        AppendMenuW(menu, MF_STRING, kCmdUpdateHub, (L"Обновить центр до " + latest_.tag).c_str());
+    }
     AppendMenuW(menu, MF_STRING | MF_DEFAULT, kCmdOpenHub, L"Открыть центр виджетов");
     AppendMenuW(menu, MF_STRING, kCmdExit, L"Выход");
 
@@ -421,6 +446,10 @@ void Hub::RunTrayCommand(UINT cmd) {
     if (cmd == 0) return;
     if (cmd == kCmdOpenHub) {
         ShowHub();
+        return;
+    }
+    if (cmd == kCmdUpdateHub) {
+        UpdateHub();
         return;
     }
     if (cmd == kCmdExit) {
@@ -475,11 +504,66 @@ void Hub::HideHub() {
 }
 
 // Центр уходит — значки виджетов возвращаются в трей, иначе ими было бы не управлять.
+// Кроме перезапуска ради новой версии: новый центр поднимется через секунду, и значки
+// только мигнули бы.
 void Hub::Exit() {
-    for (const control::Status& st : status_) {
-        if (st.running && st.linked) control::Post(st, hub::kTrayOn);
+    if (!restarting_) {
+        for (const control::Status& st : status_) {
+            if (st.running && st.linked) control::Post(st, hub::kTrayOn);
+        }
     }
     DestroyWindow(hwnd_);
+}
+
+// ---------- Обновления ----------
+
+bool Hub::HubUpdateAvailable() const {
+    return haveLatest_ && update::CompareVersions(latest_.tag, update::CurrentVersion()) > 0 &&
+           latest_.Find(L"WidgetHub.exe") != nullptr;
+}
+
+void Hub::RecomputeUpdates() {
+    const auto& entries = catalog::Entries();
+    bool changed = false;
+    for (size_t k = 0; k < entries.size(); k++) {
+        bool has = false;
+        if (haveLatest_ && Installed(static_cast<int>(k)) && !download::Busy(static_cast<int>(k))) {
+            if (const update::Asset* a = latest_.Find(entries[k].exe)) has = !update::SameAsAsset(paths_[k], *a);
+        }
+        if (has != widgetUpdate_[k]) {
+            widgetUpdate_[k] = has;
+            changed = true;
+        }
+    }
+    if (changed) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void Hub::OnUpdateChecked(bool ok) {
+    update::Release release;
+    std::wstring error;
+    if (ok && update::TakeResult(release, error)) {
+        latest_ = release;
+        haveLatest_ = true;
+        updateStatus_ = HubUpdateAvailable() ? L"Доступна версия " + latest_.tag
+                                             : L"Последний релиз " + latest_.tag + L" — центр актуален";
+    } else {
+        updateStatus_ = error.empty() ? L"Не удалось проверить обновления." : error;
+    }
+    RecomputeUpdates();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void Hub::UpdateHub() {
+    if (!HubUpdateAvailable()) return;
+    // Центр из репозитория — сборка разработчика: подменять её релизом незачем.
+    if (update::InRepoCheckout()) {
+        OpenUrl(latest_.url);
+        return;
+    }
+    if (!download::StartSelf(hwnd_, download::ReleaseUrl(data_.repo, L"WidgetHub.exe"))) {
+        updateStatus_ = download::TakeResult(download::kSelfIndex);
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void Hub::SavePlacement() {
@@ -541,6 +625,12 @@ void Hub::OnClick(const Elem& e) {
             break;
         case kOpenReleases: OpenUrl(L"https://github.com/" + data_.repo + L"/releases"); break;
         case kOpenInstall: OpenFolder(InstallDir()); break;
+        case kHubUpdate: UpdateHub(); break;
+        case kWidgetUpdate: StartDownload(i); break;
+        case kCheckUpdates:
+            updateStatus_ = L"Проверяю…";
+            update::Check(hwnd_, data_.repo);
+            break;
         default: break;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -679,7 +769,18 @@ void Hub::DrawSidebar(Graphics& g, float h) {
 
         const float tx = ix + iconSize + ScF(12.0f, dpi_);
         const float maxW = r.GetRight() - tx - ScF(8.0f, dpi_);
-        gfx::DrawText(g, gfx::Ellipsize(g, entries[k].name, *fonts_.name, maxW).c_str(), *fonts_.name,
+        float nameMax = maxW;
+        if (widgetUpdate_[k]) {
+            // Метка справа от названия: в релизе другая сборка этого виджета.
+            const wchar_t* badge = L"обновление";
+            const float bw = gfx::TextWidth(g, badge, *fonts_.small) + ScF(12.0f, dpi_);
+            const RectF br(r.GetRight() - ScF(8.0f, dpi_) - bw, r.Y + ScF(10.0f, dpi_), bw, ScF(19.0f, dpi_));
+            gfx::FillRoundRect(g, br, br.Height / 2.0f, WithAlpha(pal.accent, pal.dark ? 0x33 : 0x26));
+            gfx::DrawText(g, badge, *fonts_.small, pal.accent, br.X + br.Width / 2.0f,
+                          br.Y + (br.Height - fonts_.small->GetSize() * 1.33f) / 2.0f, gfx::Align::Center);
+            nameMax = br.X - tx - ScF(6.0f, dpi_);
+        }
+        gfx::DrawText(g, gfx::Ellipsize(g, entries[k].name, *fonts_.name, nameMax).c_str(), *fonts_.name,
                       pal.textPrimary, tx, r.Y + ScF(11.0f, dpi_));
         const float dot = ScF(7.0f, dpi_);
         const float sy = r.Y + ScF(35.0f, dpi_);
@@ -692,6 +793,25 @@ void Hub::DrawSidebar(Graphics& g, float h) {
                       pal.textMuted, tx + dot + ScF(6.0f, dpi_), sy);
         AddElem(r, kListItem, i);
         y += itemH + ScF(4.0f, dpi_);
+    }
+
+    // Новая версия центра — плашкой над его настройками: видна с любой страницы.
+    if (HubUpdateAvailable() || download::Busy(download::kSelfIndex)) {
+        const RectF card(mx, h - ScF(58.0f + 74.0f, dpi_), w - mx * 2.0f, ScF(64.0f, dpi_));
+        gfx::FillRoundRect(g, card, ScF(10.0f, dpi_), WithAlpha(pal.accent, pal.dark ? 0x1F : 0x18));
+        gfx::StrokeRoundRect(g, card, ScF(10.0f, dpi_), WithAlpha(pal.accent, 0x66), 1.0f);
+        const float px = card.X + ScF(12.0f, dpi_);
+        gfx::DrawText(g, (L"Центр " + latest_.tag).c_str(), *fonts_.bold, pal.textPrimary, px, card.Y + ScF(10.0f, dpi_));
+        std::wstring sub;
+        if (download::Busy(download::kSelfIndex)) {
+            const int p = download::Percent(download::kSelfIndex);
+            sub = p < 0 ? L"Скачиваю…" : L"Скачиваю… " + std::to_wstring(p) + L"%";
+        } else {
+            sub = update::InRepoCheckout() ? L"Сборка из репозитория — открыть релиз" : L"Нажмите, чтобы обновить";
+        }
+        gfx::DrawText(g, sub.c_str(), *fonts_.small, IsHover(kHubUpdate) ? pal.textPrimary : pal.accent, px,
+                      card.Y + ScF(34.0f, dpi_));
+        AddElem(card, kHubUpdate, 0, !download::Busy(download::kSelfIndex));
     }
 
     // Настройки центра — внизу, отдельно от списка.
@@ -763,6 +883,9 @@ void Hub::DrawWidgetPage(Graphics& g, float x0, float w, float h) {
         bx += DrawButton(g, bx, y, kGlyphFile, L"Указать файл", false, true, kPickFile) + gap;
     }
     const float btnH = ScF(36.0f, dpi_);
+    if (widgetUpdate_[k] && !busy) {
+        bx += DrawButton(g, bx, y, kGlyphDownload, L"Обновить", false, true, kWidgetUpdate) + gap;
+    }
     if (installed || st.running) DrawGlyphButton(g, RectF(bx, y, btnH, btnH), kGlyphMore, kMore);
 
     // Справа в том же ряду — автозапуск с Windows.
@@ -795,6 +918,11 @@ void Hub::DrawWidgetPage(Graphics& g, float x0, float w, float h) {
     if (note.empty() && st.running && !st.linked) {
         note = L"Запущена сборка без связи с центром — обновите виджет, чтобы управлять им отсюда.";
         error = true;
+    }
+    if (note.empty() && widgetUpdate_[k] && !busy) {
+        note = L"В релизе " + latest_.tag + L" другая сборка этого виджета." +
+               (st.running ? L" Обновление закроет его, заменит файл и запустит снова." : L"");
+        error = false;
     }
     if (note.empty() && !installed && !st.running && data_.repo.empty()) {
         note = L"Скачивание берёт файлы из релизов GitHub — укажите репозиторий в настройках центра.";
@@ -863,7 +991,7 @@ void Hub::DrawSettingsPage(Graphics& g, float x0, float w, float h) {
     y += ScF(40.0f, dpi_);
     gfx::DrawText(g, L"Оформление, откуда скачивать виджеты и как ведёт себя центр.", *fonts_.body, pal.textMuted, cx,
                   y);
-    y += ScF(40.0f, dpi_);
+    y += ScF(34.0f, dpi_);
 
     const float rowH = ScF(48.0f, dpi_);
     const float labelX = cx + ScF(18.0f, dpi_);
@@ -930,11 +1058,11 @@ void Hub::DrawSettingsPage(Graphics& g, float x0, float w, float h) {
         }
         SetTheme(data_.darkTheme, data_.accent);
     }
-    y = card.GetBottom() + ScF(26.0f, dpi_);
+    y = card.GetBottom() + ScF(20.0f, dpi_);
 
-    // --- Где брать виджеты ---
+    // --- Где брать виджеты и обновления ---
     const float fieldH = ScF(34.0f, dpi_);
-    card = section(L"СКАЧИВАНИЕ", 1, fieldH + ScF(70.0f, dpi_));
+    card = section(L"СКАЧИВАНИЕ И ОБНОВЛЕНИЯ", 2, fieldH + ScF(70.0f, dpi_));
     ry = card.Y + ScF(14.0f, dpi_);
     gfx::DrawText(g, L"Репозиторий GitHub", *fonts_.body, pal.textPrimary, labelX, ry);
     ry += ScF(26.0f, dpi_);
@@ -956,7 +1084,24 @@ void Hub::DrawSettingsPage(Graphics& g, float x0, float w, float h) {
         gfx::DrawText(g, L"Формат: владелец/репозиторий. В релиз выкладываются .exe виджетов с их обычными именами.",
                       *fonts_.small, pal.textMuted, labelX, ry);
     }
-    ry = card.GetBottom() - rowH;
+    ry = card.GetBottom() - rowH * 2.0f;
+    rowSep(ry);
+    {
+        // Версия центра и итог последней проверки релиза.
+        const float titleY = ry + ScF(7.0f, dpi_);
+        gfx::DrawText(g, (L"Центр v" + update::CurrentVersion()).c_str(), *fonts_.body, pal.textPrimary, labelX, titleY);
+        std::wstring status = update::Checking() ? L"Проверяю…" : updateStatus_;
+        if (status.empty()) status = L"Проверка — при запуске и раз в 6 часов";
+        const bool fresh = HubUpdateAvailable();
+        // Ширина кнопки без значка — как её посчитает DrawButton: поля по 15 + текст.
+        const float bw = ScF(30.0f, dpi_) + gfx::TextWidth(g, L"Проверить", *fonts_.bold);
+        const float bx = rightX - bw;
+        gfx::DrawText(g, gfx::Ellipsize(g, status, *fonts_.small, bx - labelX - ScF(12.0f, dpi_)).c_str(), *fonts_.small,
+                      fresh ? pal.accent : pal.textMuted, labelX, titleY + ScF(19.0f, dpi_));
+        DrawButton(g, bx, ry + (rowH - ScF(36.0f, dpi_)) / 2.0f, nullptr, L"Проверить", false, !update::Checking(),
+                   kCheckUpdates);
+    }
+    ry += rowH;
     rowSep(ry);
     rowLabel(L"Папка для скачанных", ry);
     {
@@ -967,7 +1112,7 @@ void Hub::DrawSettingsPage(Graphics& g, float x0, float w, float h) {
         gfx::DrawText(g, gfx::Ellipsize(g, InstallDir(), *fonts_.small, btn.X - lx - ScF(10.0f, dpi_)).c_str(),
                       *fonts_.small, pal.textFaint, lx, ry + (rowH - fonts_.small->GetSize() * 1.33f) / 2.0f);
     }
-    y = card.GetBottom() + ScF(26.0f, dpi_);
+    y = card.GetBottom() + ScF(20.0f, dpi_);
 
     // --- Поведение ---
     card = section(L"ПОВЕДЕНИЕ", 2, 0.0f);
@@ -999,12 +1144,6 @@ void Hub::DrawSettingsPage(Graphics& g, float x0, float w, float h) {
     rowSep(ry);
     rowLabel(L"Крестик прячет центр в трей, а не закрывает", ry);
     DrawSwitch(g, rightX - ScF(40.0f, dpi_), ry + swY, data_.closeToTray, kCloseToTray);
-    y = card.GetBottom() + ScF(16.0f, dpi_);
-
-    gfx::DrawText(g, L"Пока центр работает, значки виджетов в трее спрятаны: всё управление — здесь и в меню",
-                  *fonts_.small, pal.textMuted, cx + ScF(4.0f, dpi_), y);
-    gfx::DrawText(g, L"значка центра. При выходе из центра значки возвращаются.", *fonts_.small, pal.textMuted,
-                  cx + ScF(4.0f, dpi_), y + ScF(18.0f, dpi_));
 }
 
 void Hub::RebuildEditFont() {
@@ -1137,8 +1276,17 @@ LRESULT Hub::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_TIMER:
+            if (wp == kTimerUpdate) {
+                SetTimer(hwnd, kTimerUpdate, kUpdateEveryMs, nullptr);
+                update::Check(hwnd, data_.repo);
+                return 0;
+            }
             if (wp == kTimerPollSoon) KillTimer(hwnd, kTimerPollSoon);
             Poll();
+            return 0;
+
+        case update::kMsgChecked:
+            OnUpdateChecked(lp != 0);
             return 0;
 
         case WM_MOUSEMOVE: {
@@ -1304,11 +1452,35 @@ LRESULT Hub::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case download::kMsgDone: {
             const int i = static_cast<int>(wp);
+            if (i == download::kSelfIndex) {
+                updateStatus_ = download::TakeResult(i);
+                if (lp != 0) {
+                    // Новый WidgetHub.exe уже на месте: запускаем его и уходим. Он дождётся,
+                    // пока этот процесс выйдет, и займёт его место — в трее и в окне.
+                    std::wstring args = L"--wait-pid=" + std::to_wstring(GetCurrentProcessId());
+                    if (!IsWindowVisible(hwnd)) args += L" --tray";
+                    std::wstring cmd = L"\"" + ExePath() + L"\" " + args;
+                    STARTUPINFOW si = {sizeof(si)};
+                    PROCESS_INFORMATION pi = {};
+                    if (CreateProcessW(ExePath().c_str(), &cmd[0], nullptr, nullptr, FALSE, 0, nullptr,
+                                       ExeDir().c_str(), &si, &pi)) {
+                        CloseHandle(pi.hThread);
+                        CloseHandle(pi.hProcess);
+                        restarting_ = true;
+                        Exit();
+                        return 0;
+                    }
+                    updateStatus_ = L"Новая версия скачана — перезапустите центр.";
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (i >= 0 && i < static_cast<int>(notes_.size())) {
                 notes_[static_cast<size_t>(i)] = download::TakeResult(i);
                 noteIsError_[static_cast<size_t>(i)] = lp == 0;
             }
             Poll();
+            RecomputeUpdates();  // виджет обновили — плашка «есть обновление» должна уйти
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -1362,6 +1534,7 @@ bool Hub::Create(HINSTANCE inst, bool startHidden) {
     noteIsError_.assign(n, false);
     autostart_.assign(n, false);
     trayHidden_.assign(n, nullptr);
+    widgetUpdate_.assign(n, false);
 
     LoadData(data_);
     if (data_.repo.empty()) data_.repo = NormalizeRepo(catalog::DefaultRepo());
@@ -1429,6 +1602,7 @@ bool Hub::Create(HINSTANCE inst, bool startHidden) {
     Poll();  // заодно просит уже запущенные виджеты спрятать свои значки
     if (selected_ >= 0) doc_.SetSource(&catalog::Entries()[static_cast<size_t>(selected_)]);
     SetTimer(hwnd_, kTimerPoll, kPollMs, nullptr);
+    SetTimer(hwnd_, kTimerUpdate, kUpdateFirstMs, nullptr);
 
     if (!startHidden || !trayAdded_) {
         ShowWindow(hwnd_, data_.maximized ? SW_SHOWMAXIMIZED : SW_SHOW);

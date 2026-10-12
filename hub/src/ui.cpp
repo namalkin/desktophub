@@ -320,12 +320,16 @@ std::wstring Ellipsize(Graphics& g, const std::wstring& text, const Font& font, 
     return cut + L"…";
 }
 
+// Одиночный пробел GenericTypographic меряет нулём — для разрядки берём долю кегля.
+static float CharWidth(Graphics& g, wchar_t c, const Font& font) {
+    if (c == L' ') return font.GetSize() * 0.32f;
+    const wchar_t ch[2] = {c, L'\0'};
+    return TextWidth(g, ch, font);
+}
+
 float TrackedWidth(Graphics& g, const wchar_t* text, const Font& font, float tracking) {
     float total = 0.0f;
-    for (const wchar_t* p = text; *p; ++p) {
-        const wchar_t ch[2] = {*p, L'\0'};
-        total += TextWidth(g, ch, font) + tracking;
-    }
+    for (const wchar_t* p = text; *p; ++p) total += CharWidth(g, *p, font) + tracking;
     return total > 0.0f ? total - tracking : 0.0f;
 }
 
@@ -341,7 +345,7 @@ void DrawTracked(Graphics& g, const wchar_t* text, const Font& font, ARGB color,
     for (const wchar_t* p = text; *p; ++p) {
         const wchar_t ch[2] = {*p, L'\0'};
         g.DrawString(ch, 1, &font, PointF(drawX, y), &TightFormat(), &brush);
-        drawX += TextWidth(g, ch, font) + tracking;
+        drawX += CharWidth(g, *p, font) + tracking;
     }
 }
 

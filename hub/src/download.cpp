@@ -18,6 +18,7 @@ struct Job {
     catalog::Entry entry;
     std::wstring url;
     std::wstring dest;
+    bool self = false;  // обновляется сам центр
     bool busy = false;
     int percent = -1;
     std::wstring result;
@@ -143,6 +144,28 @@ DWORD WINAPI Worker(LPVOID param) {
     unsigned long long total = 0;
     std::wstring error = Fetch(job, tmp, total);
 
+    if (job.self) {
+        if (error.empty()) {
+            const std::wstring old = job.dest + L".old";
+            DeleteFileW(old.c_str());
+            if (!MoveFileExW(job.dest.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                error = L"Не удалось отодвинуть текущий WidgetHub.exe.";
+            } else if (!MoveFileExW(tmp.c_str(), job.dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                MoveFileExW(old.c_str(), job.dest.c_str(), MOVEFILE_REPLACE_EXISTING);  // вернуть как было
+                error = L"Не удалось поставить новый WidgetHub.exe.";
+            }
+        }
+        if (!error.empty()) DeleteFileW(tmp.c_str());
+        {
+            Guard g;
+            Job& slot = g_jobs[job.index];
+            slot.busy = false;
+            slot.result = error.empty() ? L"Центр обновлён, перезапускаю…" : error;
+        }
+        PostMessageW(job.notify, kMsgDone, static_cast<WPARAM>(job.index), error.empty() ? 1 : 0);
+        return 0;
+    }
+
     bool wasRunning = false;
     if (error.empty()) {
         // Работающий .exe не перезаписать: просим виджет закрыться — он сохранит данные.
@@ -201,6 +224,7 @@ bool Start(HWND notify, int index, const catalog::Entry& entry, const std::wstri
         job.entry = entry;
         job.url = url;
         job.dest = dest;
+        job.self = index == kSelfIndex;
         job.busy = true;
     }
     HANDLE thread = CreateThread(nullptr, 0, &Worker, reinterpret_cast<LPVOID>(static_cast<INT_PTR>(index)), 0, nullptr);
@@ -212,6 +236,12 @@ bool Start(HWND notify, int index, const catalog::Entry& entry, const std::wstri
     }
     CloseHandle(thread);
     return true;
+}
+
+bool StartSelf(HWND notify, const std::wstring& url) {
+    catalog::Entry self;
+    self.exe = L"WidgetHub.exe";
+    return Start(notify, kSelfIndex, self, url, ExePath());  // Start сам помечает задание как self
 }
 
 bool Busy(int index) {

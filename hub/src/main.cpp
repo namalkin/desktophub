@@ -9,12 +9,26 @@ using std::min;
 #include <gdiplus.h>
 
 #include <cwchar>
+#include <cwctype>
 
 #include "hub.h"
 #include "hub_link.h"
+#include "util.h"
 
 // -mwindows: точка входа WinMain, консольное окно не создаётся.
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE, LPSTR, int) {
+    // После самообновления новый центр запускает старый с --wait-pid=N: ждём, пока тот
+    // выйдет и освободит мьютекс, иначе новый решил бы, что он второй экземпляр.
+    if (const wchar_t* wait = wcsstr(GetCommandLineW(), L"--wait-pid=")) {
+        const DWORD pid = static_cast<DWORD>(wcstoul(wait + 11, nullptr, 10));
+        if (HANDLE old = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
+            WaitForSingleObject(old, 15000);
+            CloseHandle(old);
+        }
+    }
+    // Прошлая версия после самообновления осталась рядом как WidgetHub.exe.old.
+    DeleteFileW((ExePath() + L".old").c_str());
+
     // Второй центр не нужен: два трея и две очереди команд виджетам только мешали бы.
     HANDLE single = CreateMutexW(nullptr, FALSE, L"Local\\WidgetHub_SingleInstance");
     if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
