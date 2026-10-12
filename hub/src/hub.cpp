@@ -339,9 +339,17 @@ void Hub::ToggleAutostart(int i) {
     const size_t k = static_cast<size_t>(i);
     const catalog::Entry& e = catalog::Entries()[k];
     if (!Installed(i)) return;
-    if (!SetRunEntry(e.runValue, paths_[k], L"", !autostart_[k])) {
+    const bool enable = !autostart_[k];
+    if (!SetRunEntry(e.runValue, paths_[k], L"", enable)) {
         notes_[k] = L"Не удалось изменить автозапуск.";
         noteIsError_[k] = true;
+    } else if (enable && !hubAutostart_) {
+        // Виджет без центра при входе в Windows поставит свой значок в трей — поэтому
+        // вместе с первым виджетом в автозапуск встаёт и центр.
+        if (SetRunEntry(kHubRunValue, ExePath(), L"--tray", true)) {
+            notes_[k] = L"Центр тоже будет запускаться с Windows — чтобы значок в трее остался один.";
+            noteIsError_[k] = false;
+        }
     }
     Poll();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -965,7 +973,27 @@ void Hub::DrawSettingsPage(Graphics& g, float x0, float w, float h) {
     card = section(L"ПОВЕДЕНИЕ", 2, 0.0f);
     ry = card.Y;
     const float swY = (rowH - ScF(22.0f, dpi_)) / 2.0f;
-    rowLabel(L"Запускать центр вместе с Windows", ry);
+    {
+        int withAutostart = 0;
+        for (bool a : autostart_) withAutostart += a ? 1 : 0;
+        const float titleY = ry + ScF(7.0f, dpi_);
+        gfx::DrawText(g, L"Запускать центр вместе с Windows", *fonts_.body, pal.textPrimary, labelX, titleY);
+        std::wstring hint;
+        bool warn = false;
+        if (withAutostart == 0) {
+            hint = L"Ни один виджет не запускается с Windows";
+        } else {
+            wchar_t buf[96];
+            swprintf(buf, 96, L"Сами виджеты: %d с автозапуском", withAutostart);
+            hint = buf;
+            if (!hubAutostart_) {
+                hint += L" — без центра их значки вернутся в трей";
+                warn = true;
+            }
+        }
+        gfx::DrawText(g, hint.c_str(), *fonts_.small, warn ? pal.danger : pal.textMuted, labelX,
+                      titleY + ScF(19.0f, dpi_));
+    }
     DrawSwitch(g, rightX - ScF(40.0f, dpi_), ry + swY, hubAutostart_, kHubAutostart);
     ry += rowH;
     rowSep(ry);
