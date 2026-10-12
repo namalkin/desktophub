@@ -1,0 +1,6 @@
+dist/
+build/
+docs/
+scripts/
+README.md
+*.png

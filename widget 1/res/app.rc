@@ -1,0 +1,35 @@
+#include <windows.h>
+
+// RT_MANIFEST: DPI-awareness и совместимость с Windows 10/11.
+1 24 "app.manifest"
+
+// Иконка приложения (она же в трее). ID 1 — его берёт проводник для файла .exe.
+1 ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1, 0, 0, 0
+PRODUCTVERSION 1, 0, 0, 0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "000004b0"
+        BEGIN
+            VALUE "FileDescription", "New Year Widget"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "NewYearWidget"
+            VALUE "LegalCopyright", ""
+            VALUE "OriginalFilename", "NewYearWidget.exe"
+            VALUE "ProductName", "New Year Widget"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0, 1200
+    END
+END

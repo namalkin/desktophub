@@ -1,0 +1,55 @@
+{
+  "repo": "namalkin/desktophub",
+  "widgets": [
+    {
+      "id": "newyear",
+      "folder": "widget 1",
+      "name": "Счётчик",
+      "title": "New Year Widget",
+      "summary": "Обратный отсчёт до события и учёт долга",
+      "exe": "NewYearWidget.exe",
+      "window": "NewYearWidgetOwner",
+      "run": "NewYearWidget"
+    },
+    {
+      "id": "shortcutdock",
+      "folder": "widget 2",
+      "name": "Полки для ярлыков",
+      "title": "Shortcut Dock",
+      "summary": "Блоки-полки на рабочем столе, куда перетаскиваются ярлыки",
+      "exe": "ShortcutDock.exe",
+      "window": "ShortcutDockApp",
+      "run": "ShortcutDock"
+    },
+    {
+      "id": "plannergo",
+      "folder": "widget 3",
+      "name": "Планер",
+      "title": "Планер GO",
+      "summary": "Задачи дня, цели недели, привычки, дневник и заметки",
+      "exe": "PlannerGo.exe",
+      "window": "PlannerGoApp",
+      "run": "PlannerGo"
+    },
+    {
+      "id": "diskvac",
+      "folder": "widget 4",
+      "name": "Диск-пылесос",
+      "title": "DiskVac",
+      "summary": "Что занимает диск и что из этого можно безопасно удалить",
+      "exe": "DiskVac.exe",
+      "window": "DiskVacApp",
+      "run": "DiskVac"
+    },
+    {
+      "id": "tunebox",
+      "folder": "widget 5",
+      "name": "Плеер",
+      "title": "TuneBox",
+      "summary": "Музыка из папки: обложка, перемотка, список треков",
+      "exe": "TuneBox.exe",
+      "window": "TuneBoxOwner",
+      "run": "TuneBox"
+    }
+  ]
+}

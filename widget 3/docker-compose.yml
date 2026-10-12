@@ -1,0 +1,16 @@
+# Альтернатива `docker build --output`: собрать и положить .exe в ./dist
+#
+#   docker compose run --rm build
+#
+services:
+  build:
+    build:
+      context: .
+      target: build
+    image: plannergo-build
+    volumes:
+      - ./dist:/out
+    command: >
+      sh -c "cp /src/build/PlannerGo.exe /out/PlannerGo.exe &&
+             ls -la /out/PlannerGo.exe &&
+             echo 'Готово: dist/PlannerGo.exe'"

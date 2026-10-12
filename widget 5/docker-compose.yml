@@ -1,0 +1,16 @@
+# Альтернатива `docker build --output`: собрать и положить .exe в ./dist
+#
+#   docker compose run --rm build
+#
+services:
+  build:
+    build:
+      context: .
+      target: build
+    image: tunebox-build
+    volumes:
+      - ./dist:/out
+    command: >
+      sh -c "cp /src/build/TuneBox.exe /out/TuneBox.exe &&
+             ls -la /out/TuneBox.exe &&
+             echo 'Готово: dist/TuneBox.exe'"

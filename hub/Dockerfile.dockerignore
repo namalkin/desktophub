@@ -1,0 +1,12 @@
+# Контекст сборки центра — весь репозиторий, поэтому пускаем в него только нужное:
+# исходники центра и то, что он показывает о виджетах.
+*
+!hub/CMakeLists.txt
+!hub/catalog.json
+!hub/cmake
+!hub/res
+!hub/src
+!hub/tools
+!widget */README.md
+!widget */docs
+!widget */res/app.ico

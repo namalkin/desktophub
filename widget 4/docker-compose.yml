@@ -1,0 +1,16 @@
+# Альтернатива `docker build --output`: собрать и положить .exe в ./dist
+#
+#   docker compose run --rm build
+#
+services:
+  build:
+    build:
+      context: .
+      target: build
+    image: diskvac-build
+    volumes:
+      - ./dist:/out
+    command: >
+      sh -c "cp /src/build/DiskVac.exe /out/DiskVac.exe &&
+             ls -la /out/DiskVac.exe &&
+             echo 'Готово: dist/DiskVac.exe'"

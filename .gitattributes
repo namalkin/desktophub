@@ -1,0 +1,6 @@
+# Исходники и скрипты — с LF: они собираются в Linux-контейнере, где CRLF ломает sh.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.exe binary

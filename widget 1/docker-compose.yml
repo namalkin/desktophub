@@ -1,0 +1,16 @@
+# Альтернатива `docker build --output`: собрать и положить .exe в ./dist
+#
+#   docker compose run --rm build
+#
+services:
+  build:
+    build:
+      context: .
+      target: build
+    image: newyearwidget-build
+    volumes:
+      - ./dist:/out
+    command: >
+      sh -c "cp /src/build/NewYearWidget.exe /out/NewYearWidget.exe &&
+             ls -la /out/NewYearWidget.exe &&
+             echo 'Готово: dist/NewYearWidget.exe'"

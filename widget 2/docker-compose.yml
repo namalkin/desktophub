@@ -1,0 +1,16 @@
+# Альтернатива `docker build --output`: собрать и положить .exe в ./dist
+#
+#   docker compose run --rm build
+#
+services:
+  build:
+    build:
+      context: .
+      target: build
+    image: shortcutdock-build
+    volumes:
+      - ./dist:/out
+    command: >
+      sh -c "cp /src/build/ShortcutDock.exe /out/ShortcutDock.exe &&
+             ls -la /out/ShortcutDock.exe &&
+             echo 'Готово: dist/ShortcutDock.exe'"

@@ -1,0 +1,6 @@
+dist/
+build/
+.git/
+*.md
+!README.md
+scripts/
