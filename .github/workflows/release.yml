@@ -1,0 +1,114 @@
+# Релиз: сборка центра и всех виджетов, подпись через SignPath, публикация на GitHub.
+#
+# Запускается тегом v* (git tag v1.2.0 && git push origin v1.2.0) или вручную из вкладки
+# Actions. Тег обязан совпадать с файлом VERSION — центр сравнивает с ним свою версию.
+#
+# Публикация — от имени Namalkin: секрет RELEASE_TOKEN (его personal access token).
+#
+# Подпись включается сама, когда в настройках репозитория заданы:
+#   секрет    SIGNPATH_API_TOKEN
+#   переменные SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_POLICY_SLUG
+# Пока их нет, релиз выходит без подписи — как при ручном release.ps1.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия и тег
+        id: version
+        run: |
+          version="$(tr -d ' \r\n' < VERSION)"
+          tag="v${version}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "${tag}" ]; then
+            echo "Тег ${GITHUB_REF_NAME} не совпадает с VERSION (${version})" >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Сборка
+        env:
+          DOCKER_BUILDKIT: '1'
+        run: |
+          mkdir -p out
+          # Имена .exe и папки берём из каталога центра — тот же список, что видит центр.
+          python3 - <<'EOF' > widgets.txt
+          import json
+          for w in json.load(open('hub/catalog.json', encoding='utf-8'))['widgets']:
+              print(w['folder'] + '\t' + w['exe'])
+          EOF
+          while IFS="$(printf '\t')" read -r folder exe; do
+            docker build --target export --output "type=local,dest=out" "$folder"
+            test -f "out/$exe"
+          done < widgets.txt
+          docker build -f hub/Dockerfile --target export --output "type=local,dest=out" .
+          ls -la out
+
+      - name: Неподписанные файлы
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned
+          path: out/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Подпись (SignPath)
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: files
+
+      - name: Без подписи
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID == '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: unsigned
+          path: files
+
+      - name: Публикация
+        env:
+          # Релизы выкладываются от имени Namalkin, а не github-actions[bot]: нужен его
+          # personal access token (Contents: read and write на этот репозиторий).
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Нет секрета RELEASE_TOKEN — релиз не выложен (сборка и подпись прошли, файлы в артефактах)." >&2
+            exit 1
+          fi
+          cd files
+          # Центр ещё и в zip: браузеры строже к голому .exe без репутации.
+          zip -9 WidgetHub.zip WidgetHub.exe
+          ls -la
+          notes="Достаточно скачать WidgetHub.exe (или WidgetHub.zip) — виджеты центр скачает сам."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./* --clobber
+          else
+            gh release create "$TAG" ./* --title "$TAG" --notes "$notes" --target "$GITHUB_SHA"
+          fi
