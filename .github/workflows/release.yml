@@ -99,7 +99,7 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "Нет секрета RELEASE_TOKEN — релиз не выложен (сборка и подпись прошли, файлы в артефактах)." >&2
+            echo "Нет секрета RELEASE_TOKEN — релиз не выложен. Собранные файлы лежат в артефактах этого запуска." >&2
             exit 1
           fi
           cd files
